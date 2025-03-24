@@ -13,6 +13,9 @@ import {
   DialogActions,
   Button,
   Rating,
+  CircularProgress,
+  Fab,
+  Tooltip,
 } from "@mui/material";
 import { styled } from "@mui/system";
 import {
@@ -23,20 +26,23 @@ import {
 } from "react-icons/io5";
 import { format } from "date-fns";
 import { v4 as uuidv4 } from "uuid"; // For generating unique messageId
-import bot_avatar from "../assets/chocked.jpeg";
-import avatar from "../assets/avatar.jpg";
+import LeiaIcon from "../assets/Leia.png";
+import ProfileIcon from "../assets/profile-58-512.png";
+import Linkify from "react-linkify";
+import { BiDownload } from "react-icons/bi";
 
 /**
  * Each message in the chat has:
- * - localId: unique number in React, for rendering only (not sent to backend).
- * - conversationId: PK in DynamoDB (ex: "conversation_1").
- * - messageId: SK in DynamoDB (a UUID).
- * - timestamp: ISO string for display/sorting.
+ * - localId: unique number in React (for rendering only).
+ * - conversationId: PK in DynamoDB.
+ * - messageId: SK in DynamoDB (UUID).
+ * - timestamp: string (ISO) for display.
  * - text: message text.
- * - isUser: true if user, false if bot.
+ * - isUser: true if it's a user message, false if bot.
  * - feedback: "up" | "down" | "".
- * - comment: optional text if feedback is negative (or for any feedback).
- * - rating: numeric rating (1–10) or null if none.
+ * - comment: text feedback if negative, etc.
+ * - rating: numeric rating (1–10).
+ * - agentAliasId: optional extra field from your LLM API.
  */
 interface ChatMessage {
   localId: number;
@@ -48,31 +54,45 @@ interface ChatMessage {
   feedback: "up" | "down" | "";
   comment: string;
   rating?: number | null;
+  agentAliasId?: string;
 }
 
-/**
- * Your API Gateway endpoint. Update with the actual URL.
- */
 const BACKEND_URL = "https://2lvum8mh59.execute-api.us-east-1.amazonaws.com";
 
-/**
- * Default greeting from the bot.
- */
+/** Default greeting from the bot. */
 const createDefaultBotMessage = (): ChatMessage => ({
   localId: 1,
-  conversationId: "conversation_1",
+  conversationId: "",
   messageId: uuidv4(),
   timestamp: new Date().toISOString(),
-  text: "Hello! What can I do to help you?",
+  text: "Hi, I am Leia. How can I assist you today?",
   isUser: false,
   feedback: "",
   comment: "",
   rating: null,
 });
 
+/** Generate a unique conversation ID for each page load. */
+const generateConversationId = () => {
+  return (
+    "conversation_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8)
+  );
+};
+
 /**
- * Styles
+ * Styled wrappers
  */
+const ContainerWrapper = styled("div")({
+  position: "relative",
+});
+
+const ExportButton = styled(Fab)({
+  position: "absolute",
+  top: "20px",
+  right: "20px",
+  zIndex: 10,
+});
+
 const ChatContainer = styled(Container)(({ theme }) => ({
   height: "95vh",
   minWidth: "95vw",
@@ -123,58 +143,57 @@ const InputContainer = styled(Box)({
   boxShadow: "0 -2px 4px rgba(0, 0, 0, 0.1)",
 });
 
+/** The main Chatbot component */
 const Chatbot = () => {
-  /**
-   * Chat state initialization
-   */
   const [messages, setMessages] = React.useState<ChatMessage[]>([
     createDefaultBotMessage(),
   ]);
   const [inputText, setInputText] = React.useState("");
   const [isThinking, setIsThinking] = React.useState(false);
+  const [conversationId, setConversationId] = React.useState<string>("");
 
-  /**
-   * For feedback dialog (shared for thumbs up & thumbs down)
-   */
+  // For feedback dialog
   const [showModal, setShowModal] = React.useState(false);
   const [feedbackComment, setFeedbackComment] = React.useState("");
-  const [feedbackRating, setFeedbackRating] = React.useState<number | null>(5); // default rating
+  const [feedbackRating, setFeedbackRating] = React.useState<number | null>(5);
   const [selectedLocalId, setSelectedLocalId] = React.useState<number | null>(
     null
   );
 
-  // We'll scroll to bottom when messages change
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
-  /**
-   * Fetch conversation from DynamoDB on mount
-   */
+  /** On mount, generate a random conversationId. */
+  React.useEffect(() => {
+    const randomId = generateConversationId();
+    setConversationId(randomId);
+  }, []);
+
+  /** Fetch conversation from DynamoDB */
   React.useEffect(() => {
     const fetchMessages = async () => {
+      if (!conversationId) return; // skip if we haven't set it yet
       try {
         const response = await fetch(
-          `${BACKEND_URL}/messages?conversationId=conversation_1`
+          `${BACKEND_URL}/messages?conversationId=${conversationId}`
         );
         const data = await response.json();
 
-        // Convert each item to ChatMessage
-        let newMessages = data.map((item: any, index: number) => {
-          return {
-            localId: index + 2,
-            conversationId: item.conversationId,
-            messageId: item.messageId,
-            timestamp: item.timestamp,
-            text: item.text,
-            isUser: item.isUser,
-            feedback: item.feedback || "",
-            comment: item.comment || "",
-            rating: item.rating ? Number(item.rating) : null,
-          } as ChatMessage;
-        });
+        let newMessages = data.map((item: any, index: number) => ({
+          localId: index + 2,
+          conversationId: item.conversationId,
+          messageId: item.messageId,
+          timestamp: item.timestamp,
+          text: item.text,
+          isUser: item.isUser,
+          feedback: item.feedback || "",
+          comment: item.comment || "",
+          rating: item.rating ? Number(item.rating) : null,
+          agentAliasId: item.agentAliasId || "",
+        })) as ChatMessage[];
 
-        // Sort if you want chronological
+        // Sort by timestamp if desired
         newMessages = newMessages.sort(
-          (a: ChatMessage, b: ChatMessage) =>
+          (a, b) =>
             new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
         );
 
@@ -185,26 +204,63 @@ const Chatbot = () => {
     };
 
     fetchMessages();
-  }, []);
+  }, [conversationId]);
 
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, isThinking]);
 
   /**
-   * Single function to open the dialog for both thumbs up & thumbs down
+   * Export CSV
+   * - We'll build a CSV with columns like [localId, time, user/bot, text, feedback, comment, rating].
    */
+  const handleExportCsv = () => {
+    const header = [
+      "LocalId",
+      "Timestamp",
+      "UserOrBot",
+      "Text",
+      "Feedback",
+      "Comment",
+      "Rating",
+    ];
+    const rows = messages.map((msg) => [
+      msg.localId,
+      msg.timestamp,
+      msg.isUser ? "User" : "Bot",
+      `"${msg.text?.replace(/"/g, '""')}"`, // handle quotes
+      msg.feedback,
+      msg.comment,
+      msg.rating ?? "",
+    ]);
+
+    const csvContent = [header.join(","), ...rows.map((r) => r.join(","))].join(
+      "\n"
+    );
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `${conversationId}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  /** Thumbs up/down open the same dialog */
   const handleOpenFeedbackDialog = (
     localId: number,
     newFeedback: "up" | "down"
   ) => {
     setSelectedLocalId(localId);
     setShowModal(true);
-    // maybe default rating is 10 for "up", 5 for "down"
     setFeedbackRating(newFeedback === "up" ? 10 : 1);
     setFeedbackComment("");
 
-    // Set local feedback right away
+    // Update local feedback
     setMessages((prev) =>
       prev.map((m) =>
         m.localId === localId ? { ...m, feedback: newFeedback } : m
@@ -215,14 +271,10 @@ const Chatbot = () => {
   const handleThumbUpClick = (localId: number) => {
     handleOpenFeedbackDialog(localId, "up");
   };
-
   const handleThumbDownClick = (localId: number) => {
     handleOpenFeedbackDialog(localId, "down");
   };
 
-  /**
-   * Closes dialog without saving anything
-   */
   const handleCloseModal = () => {
     setShowModal(false);
     setFeedbackComment("");
@@ -230,16 +282,12 @@ const Chatbot = () => {
     setSelectedLocalId(null);
   };
 
-  /**
-   * When user clicks "Send" in the popin,
-   * we store feedback, rating, comment in DB.
-   */
   const handleSubmitFeedback = async () => {
     if (selectedLocalId == null) {
       handleCloseModal();
       return;
     }
-    // Update local state
+
     setMessages((prev) =>
       prev.map((m) =>
         m.localId === selectedLocalId
@@ -248,7 +296,6 @@ const Chatbot = () => {
       )
     );
 
-    // Update in DB
     const message = messages.find((m) => m.localId === selectedLocalId);
     if (message) {
       try {
@@ -258,7 +305,7 @@ const Chatbot = () => {
           body: JSON.stringify({
             conversationId: message.conversationId,
             messageId: message.messageId,
-            feedback: message.feedback, // "up" or "down"
+            feedback: message.feedback,
             comment: feedbackComment,
             rating: feedbackRating,
           }),
@@ -270,11 +317,9 @@ const Chatbot = () => {
     handleCloseModal();
   };
 
-  /**
-   * Send a new user message, then simulate bot response
-   */
+  /** Send user message, then get bot reply */
   const handleSend = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || !conversationId) return;
 
     const newLocalId = messages.length
       ? Math.max(...messages.map((m) => m.localId)) + 1
@@ -284,18 +329,19 @@ const Chatbot = () => {
 
     const userMessage: ChatMessage = {
       localId: newLocalId,
-      conversationId: "conversation_1",
+      conversationId,
       messageId: newMessageId,
       timestamp: msgTimestamp,
       text: inputText,
       isUser: true,
       feedback: "",
       comment: "",
-      rating: null,
     };
 
+    // Local update
     setMessages((prev) => [...prev, userMessage]);
 
+    // Post user msg
     try {
       await fetch(`${BACKEND_URL}/messages`, {
         method: "POST",
@@ -309,261 +355,339 @@ const Chatbot = () => {
     setInputText("");
     setIsThinking(true);
 
-    // Simulate bot response
-    setTimeout(async () => {
-      const botLocalId = newLocalId + 1;
-      const botMsgId = uuidv4();
-      const botTimestamp = new Date().toISOString();
-
-      const botMessage: ChatMessage = {
-        localId: botLocalId,
-        conversationId: "conversation_1",
-        messageId: botMsgId,
-        timestamp: botTimestamp,
-        text: "Thank you for your message. I'm processing your request.",
-        isUser: false,
-        feedback: "",
-        comment: "",
-        rating: null,
-      };
-
-      setMessages((prev) => [...prev, botMessage]);
-
-      try {
-        await fetch(`${BACKEND_URL}/messages`, {
+    // Bot LLM
+    let botReplyText = "Sorry, no response";
+    let agentAliasId = "";
+    try {
+      const llmResponse = await fetch(
+        "https://m0mytrw7ug.execute-api.us-east-1.amazonaws.com/v1/conversation",
+        {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(botMessage),
-        });
-      } catch (error) {
-        console.error("Send bot message error:", error);
-      }
-      setIsThinking(false);
-    }, 1000);
+          body: JSON.stringify({
+            text: inputText,
+            sessionId: conversationId,
+          }),
+        }
+      );
+      const llmData = await llmResponse.json();
+      botReplyText = llmData.response;
+      agentAliasId = llmData.agentAliasId;
+    } catch (error) {
+      console.error("LLM API error:", error);
+      botReplyText = "Error getting answer from LLM API.";
+    }
+
+    const botLocalId = newLocalId + 1;
+    const botMsgId = uuidv4();
+    const botTimestamp = new Date().toISOString();
+
+    const botMessage: ChatMessage = {
+      localId: botLocalId,
+      conversationId,
+      messageId: botMsgId,
+      timestamp: botTimestamp,
+      text: botReplyText,
+      isUser: false,
+      feedback: "",
+      comment: "",
+      rating: null,
+      agentAliasId,
+    };
+
+    setMessages((prev) => [...prev, botMessage]);
+
+    // Post bot msg
+    try {
+      await fetch(`${BACKEND_URL}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(botMessage),
+      });
+    } catch (error) {
+      console.error("Send bot message to DB error:", error);
+    }
+
+    setIsThinking(false);
   };
 
-  /**
-   * Clear local messages
-   */
   const handleClear = () => {
     setInputText("");
     setMessages([createDefaultBotMessage()]);
+    setConversationId(generateConversationId());
   };
 
-  /**
-   * Handle Enter in text field
-   */
-  const handleKeyPress = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
+  /** Press Enter to send */
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
       handleSend();
     }
   };
 
   return (
-    <ChatContainer>
-      <MessageContainer>
-        {messages.map((message, idx) => (
-          <Box
-            key={message.localId}
-            sx={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: message.isUser ? "flex-end" : "flex-start",
-            }}
-          >
-            <Box sx={{ display: "flex", alignItems: "flex-end", gap: 1 }}>
-              {!message.isUser && (
-                <Avatar
-                  src={bot_avatar}
-                  alt="Bot Avatar"
-                  sx={{ width: 48, height: 48 }}
-                />
-              )}
+    <ContainerWrapper>
+      {/* The export button in top-right corner */}
+      <Tooltip
+        title="Export conversation and feedback to CSV"
+        placement="left"
+        arrow
+      >
+        <ExportButton
+          color="primary"
+          aria-label="export"
+          size="small"
+          onClick={handleExportCsv}
+        >
+          <BiDownload />
+        </ExportButton>
+      </Tooltip>
 
-              <MessageBubble isUser={message.isUser}>
-                <Typography variant="body1">{message.text}</Typography>
-                <Box
-                  sx={{
-                    display: "flex",
-                    gap: 1,
-                    justifyContent: "space-between",
-                  }}
-                >
-                  {idx !== 0 ? (
-                    <Typography
-                      variant="caption"
-                      sx={{ display: "block", mt: 0.5, opacity: 0.7 }}
-                    >
-                      {format(new Date(message.timestamp), "HH:mm")}
-                    </Typography>
-                  ) : null}
+      <ChatContainer>
+        <MessageContainer>
+          {messages.map((message, idx) => (
+            <Box
+              key={message.localId}
+              sx={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: message.isUser ? "flex-end" : "flex-start",
+              }}
+            >
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "flex-end",
+                  gap: !message.isUser ? 1 : 0,
+                }}
+              >
+                {!message.isUser && (
+                  <Avatar
+                    sx={{
+                      width: 38,
+                      height: 38,
+                      backgroundColor: "#f5f5f5",
+                    }}
+                    src={LeiaIcon}
+                  />
+                )}
 
-                  {/* Show thumbs only for bot messages except the first greeting, if desired */}
-                  {!message.isUser && idx !== 0 && (
-                    <Box>
-                      <IconButton
-                        size="small"
-                        onClick={() => handleThumbUpClick(message.localId)}
-                        aria-label="Thumbs up"
-                        color={
-                          message.feedback === "up" ? "success" : "default"
-                        }
+                <MessageBubble isUser={message.isUser}>
+                  <Linkify
+                    componentDecorator={(href, text, key) => (
+                      <a
+                        href={href}
+                        key={key}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: "#1976d2" }}
                       >
-                        <IoThumbsUp />
-                      </IconButton>
-
-                      <IconButton
-                        size="small"
-                        onClick={() => handleThumbDownClick(message.localId)}
-                        aria-label="Thumbs down"
-                        color={
-                          message.feedback === "down" ? "error" : "default"
-                        }
-                      >
-                        <IoThumbsDown />
-                      </IconButton>
-                    </Box>
-                  )}
-                </Box>
-
-                {/* Show rating if set */}
-                {message.rating && (
-                  <Typography
-                    variant="caption"
+                        {text}
+                      </a>
+                    )}
+                  >
+                    <Typography variant="body1">{message.text}</Typography>
+                  </Linkify>
+                  <Box
                     sx={{
                       display: "flex",
-                      alignItems: "center",
-                      mt: 0.5,
-                      fontStyle: "italic",
+                      gap: 1,
+                      justifyContent: "space-between",
                     }}
                   >
-                    Rating:{" "}
-                    <Rating
-                      value={message.rating}
-                      readOnly
-                      size="small"
-                      max={10}
-                    />
-                  </Typography>
-                )}
-                {/* Show comment if set */}
-                {message.comment && (
-                  <Typography
-                    variant="caption"
-                    sx={{ display: "block", mt: 0.5, fontStyle: "italic" }}
-                  >
-                    Feedback: {message.comment}
-                  </Typography>
-                )}
-              </MessageBubble>
+                    {idx !== 0 && (
+                      <Typography
+                        variant="caption"
+                        sx={{ display: "block", mt: 0.5, opacity: 0.7 }}
+                      >
+                        {format(new Date(message.timestamp), "HH:mm")}
+                      </Typography>
+                    )}
 
-              {message.isUser && (
-                <Avatar
-                  src={avatar}
-                  alt="User Avatar"
-                  sx={{ width: 48, height: 48 }}
-                />
-              )}
+                    {/* Thumbs for bot messages except the first greeting */}
+                    {!message.isUser && idx !== 0 && (
+                      <Box>
+                        <IconButton
+                          size="small"
+                          onClick={() => handleThumbUpClick(message.localId)}
+                          aria-label="Thumbs up"
+                          color={
+                            message.feedback === "up" ? "success" : "default"
+                          }
+                        >
+                          <IoThumbsUp />
+                        </IconButton>
+
+                        <IconButton
+                          size="small"
+                          onClick={() => handleThumbDownClick(message.localId)}
+                          aria-label="Thumbs down"
+                          color={
+                            message.feedback === "down" ? "error" : "default"
+                          }
+                        >
+                          <IoThumbsDown />
+                        </IconButton>
+                      </Box>
+                    )}
+                  </Box>
+
+                  {/* Show rating/comment if available */}
+                  {message.rating && (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        display: "inline-flex", // use inline‐flex
+                        alignItems: "center",
+                        gap: "4px", // small space between label & stars
+                        whiteSpace: "nowrap", // prevent line breaks
+                        mt: 0.5,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      Rating:
+                      <Rating
+                        value={message.rating}
+                        readOnly
+                        size="small"
+                        max={10}
+                      />
+                    </Typography>
+                  )}
+                  {message.comment && (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        display: "block",
+                        mt: 0.5,
+                        fontStyle: "italic",
+                      }}
+                    >
+                      Feedback: {message.comment}
+                    </Typography>
+                  )}
+                </MessageBubble>
+
+                {message.isUser && (
+                  <Avatar
+                    sx={{
+                      width: 38,
+                      height: 38,
+                      backgroundColor: "#f5f5f5",
+                    }}
+                    src={ProfileIcon}
+                  />
+                )}
+              </Box>
             </Box>
-          </Box>
-        ))}
-        {isThinking && (
-          <Typography variant="caption" sx={{ ml: 2, color: "text.secondary" }}>
-            Bot is thinking...
-          </Typography>
-        )}
-        <div ref={messagesEndRef} />
-      </MessageContainer>
+          ))}
+          {isThinking && (
+            <Typography
+              variant="caption"
+              sx={{ ml: 2, color: "text.secondary" }}
+            >
+              <Box display="flex" gap="10px" alignItems="center">
+                <span>Bot is thinking</span>
+                <CircularProgress size="10px" />
+              </Box>
+            </Typography>
+          )}
+          <div ref={messagesEndRef} />
+        </MessageContainer>
 
-      {/* Input field */}
-      <InputContainer>
-        <TextField
-          fullWidth
-          variant="outlined"
-          placeholder="Type your message..."
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={handleKeyPress}
-          multiline
-          maxRows={4}
-          sx={{ backgroundColor: "#ffffff" }}
-        />
-        <IconButton
-          color="primary"
-          onClick={handleSend}
-          disabled={!inputText.trim()}
-          sx={{
-            backgroundColor: "#1976d2",
-            color: "#ffffff",
-            "&:hover": {
-              backgroundColor: "#1565c0",
-            },
-            height: 48,
-            width: 48,
-          }}
-        >
-          <IoSend />
-        </IconButton>
-
-        <IconButton
-          color="error"
-          onClick={handleClear}
-          disabled={!messages.some((msg) => msg.isUser)}
-          sx={{
-            backgroundColor: "#e00202",
-            color: "#ffffff",
-            "&:hover": {
-              backgroundColor: "#a30202",
-            },
-            height: 48,
-            width: 48,
-          }}
-        >
-          <IoTrashBinOutline />
-        </IconButton>
-      </InputContainer>
-
-      {/* Dialog for feedback, unchanged styling/layout from your code */}
-      <Dialog open={showModal} onClose={handleCloseModal}>
-        <DialogTitle>Can you give a feedback about my answer?</DialogTitle>
-        <DialogContent>
-          {/* Same layout as your original code */}
+        {/* Input field */}
+        <InputContainer>
           <TextField
             fullWidth
+            variant="outlined"
+            placeholder="Type your message..."
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyPress}
             multiline
-            rows={3}
-            value={feedbackComment}
-            onChange={(e) => setFeedbackComment(e.target.value)}
-            placeholder="Tell me more..."
+            maxRows={4}
+            sx={{ backgroundColor: "#ffffff" }}
           />
-          <Box
+          <IconButton
+            color="primary"
+            onClick={handleSend}
+            disabled={!inputText.trim()}
             sx={{
-              display: "flex",
-              justifyContent: "center",
-              flexDirection: "column",
-              alignItems: "center",
-              marginTop: 1,
+              backgroundColor: "#1976d2",
+              color: "#ffffff",
+              "&:hover": {
+                backgroundColor: "#1565c0",
+              },
+              height: 48,
+              width: 48,
             }}
           >
-            <Typography component="legend">Rating</Typography>
-            <Rating
-              name="customized-10"
-              value={feedbackRating || 0}
-              max={10}
-              onChange={(_, newVal) => {
-                if (newVal) setFeedbackRating(newVal);
-              }}
+            <IoSend />
+          </IconButton>
+
+          <IconButton
+            color="error"
+            onClick={handleClear}
+            disabled={!messages.some((msg) => msg.isUser)}
+            sx={{
+              backgroundColor: "#e00202",
+              color: "#ffffff",
+              "&:hover": {
+                backgroundColor: "#a30202",
+              },
+              height: 48,
+              width: 48,
+            }}
+          >
+            <IoTrashBinOutline />
+          </IconButton>
+        </InputContainer>
+
+        {/* Feedback Dialog */}
+        <Dialog
+          open={showModal}
+          onClose={handleCloseModal}
+          fullWidth
+          maxWidth="lg"
+        >
+          <DialogTitle>Can you give a feedback about my answer?</DialogTitle>
+          <DialogContent>
+            <TextField
+              fullWidth
+              multiline
+              rows={10}
+              value={feedbackComment}
+              onChange={(e) => setFeedbackComment(e.target.value)}
+              placeholder="Feedback..."
             />
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="contained" onClick={handleSubmitFeedback}>
-            Send
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </ChatContainer>
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "center",
+                flexDirection: "column",
+                alignItems: "center",
+                marginTop: 1,
+              }}
+            >
+              <Typography component="legend">Rating</Typography>
+              <Rating
+                name="customized-10"
+                value={feedbackRating || 0}
+                max={10}
+                onChange={(_, newVal) => {
+                  if (newVal) setFeedbackRating(newVal);
+                }}
+              />
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button variant="contained" onClick={handleSubmitFeedback}>
+              Send
+            </Button>
+          </DialogActions>
+        </Dialog>
+      </ChatContainer>
+    </ContainerWrapper>
   );
 };
 
