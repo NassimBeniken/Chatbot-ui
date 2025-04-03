@@ -30,6 +30,7 @@ import LeiaIcon from "../assets/Leia.png";
 import ProfileIcon from "../assets/profile-58-512.png";
 import Linkify from "react-linkify";
 import { BiDownload } from "react-icons/bi";
+import Swal from "sweetalert2";
 
 /**
  * Each message in the chat has:
@@ -412,9 +413,37 @@ const Chatbot = () => {
   };
 
   const handleClear = () => {
-    setInputText("");
-    setMessages([createDefaultBotMessage()]);
-    setConversationId(generateConversationId());
+    if (!messages.some((msg) => msg.isUser)) return;
+
+    Swal.fire({
+      title: "Clear this conversation?",
+      text: "All messages from this session will be deleted. You can export them first if you want.",
+      icon: "warning",
+      showDenyButton: true,
+      showCancelButton: false,
+      showCloseButton: true,
+      confirmButtonColor: "#c40000",
+      confirmButtonText: "Clear only",
+      denyButtonColor: "#00a02c",
+      denyButtonText: "Export & Clear",
+      reverseButtons: true,
+      allowOutsideClick: true,
+      allowEscapeKey: true,
+    }).then((result) => {
+      if (result.isConfirmed) {
+        // Just clear
+        setInputText("");
+        setMessages([createDefaultBotMessage()]);
+        setConversationId(generateConversationId());
+      } else if (result.isDenied) {
+        // Export and then clear
+        handleExportCsv();
+        setInputText("");
+        setMessages([createDefaultBotMessage()]);
+        setConversationId(generateConversationId());
+      }
+      // If cancelled or outside click, do nothing
+    });
   };
 
   /** Press Enter to send */
