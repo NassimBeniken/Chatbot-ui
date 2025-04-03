@@ -360,7 +360,7 @@ const Chatbot = () => {
     let agentAliasId = "";
     try {
       const llmResponse = await fetch(
-        "https://1rvd8ntcx2.execute-api.us-east-1.amazonaws.com/v1/conversation",
+        "https://m0mytrw7ug.execute-api.us-east-1.amazonaws.com/v1/conversation",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
