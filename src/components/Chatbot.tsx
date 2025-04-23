@@ -25,60 +25,18 @@ import {
   IoThumbsDown,
 } from "react-icons/io5";
 import { format } from "date-fns";
-import { v4 as uuidv4 } from "uuid"; // For generating unique messageId
+import { v4 as uuidv4 } from "uuid";
 import LeiaIcon from "../assets/Leia.png";
 import ProfileIcon from "../assets/profile-58-512.png";
 import Linkify from "react-linkify";
 import { BiDownload } from "react-icons/bi";
 import Swal from "sweetalert2";
 
-/**
- * Each message in the chat has:
- * - localId: unique number in React (for rendering only).
- * - conversationId: PK in DynamoDB.
- * - messageId: SK in DynamoDB (UUID).
- * - timestamp: string (ISO) for display.
- * - text: message text.
- * - isUser: true if it's a user message, false if bot.
- * - feedback: "up" | "down" | "".
- * - comment: text feedback if negative, etc.
- * - rating: numeric rating (1–10).
- * - agentAliasId: optional extra field from your LLM API.
- */
-interface ChatMessage {
-  localId: number;
-  conversationId: string;
-  messageId: string;
-  timestamp: string;
-  text: string;
-  isUser: boolean;
-  feedback: "up" | "down" | "";
-  comment: string;
-  rating?: number | null;
-  agentAliasId?: string;
-}
-
+const WEBSOCKET_URL =
+  "wss://4hb2bvmi9g.execute-api.us-east-1.amazonaws.com/dev";
+const WEBSOCKET_SEARCH_URL =
+  "wss://q2s8rqux0i.execute-api.us-east-1.amazonaws.com/uat";
 const BACKEND_URL = "https://2lvum8mh59.execute-api.us-east-1.amazonaws.com";
-
-/** Default greeting from the bot. */
-const createDefaultBotMessage = (): ChatMessage => ({
-  localId: 1,
-  conversationId: "",
-  messageId: uuidv4(),
-  timestamp: new Date().toISOString(),
-  text: "Hi, I am Leia. How can I assist you today?",
-  isUser: false,
-  feedback: "",
-  comment: "",
-  rating: null,
-});
-
-/** Generate a unique conversation ID for each page load. */
-const generateConversationId = () => {
-  return (
-    "conversation_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8)
-  );
-};
 
 /**
  * Styled wrappers
@@ -144,7 +102,37 @@ const InputContainer = styled(Box)({
   boxShadow: "0 -2px 4px rgba(0, 0, 0, 0.1)",
 });
 
-/** The main Chatbot component */
+interface ChatMessage {
+  localId: number;
+  conversationId: string;
+  messageId: string;
+  timestamp: string;
+  text: string;
+  isUser: boolean;
+  feedback: "up" | "down" | "";
+  comment: string;
+  rating?: number | null;
+  agentAliasId?: string;
+}
+
+const createDefaultBotMessage = (): ChatMessage => ({
+  localId: 1,
+  conversationId: "",
+  messageId: uuidv4(),
+  timestamp: new Date().toISOString(),
+  text: "Hi, I am Leia. How can I assist you today?",
+  isUser: false,
+  feedback: "",
+  comment: "",
+  rating: null,
+});
+
+const generateConversationId = () => {
+  return (
+    "conversation_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8)
+  );
+};
+
 const Chatbot = () => {
   const [messages, setMessages] = React.useState<ChatMessage[]>([
     createDefaultBotMessage(),
@@ -152,59 +140,62 @@ const Chatbot = () => {
   const [inputText, setInputText] = React.useState("");
   const [isThinking, setIsThinking] = React.useState(false);
   const [conversationId, setConversationId] = React.useState<string>("");
-
-  // For feedback dialog
   const [showModal, setShowModal] = React.useState(false);
   const [feedbackComment, setFeedbackComment] = React.useState("");
   const [feedbackRating, setFeedbackRating] = React.useState<number | null>(5);
   const [selectedLocalId, setSelectedLocalId] = React.useState<number | null>(
     null
   );
-
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const socketRef = React.useRef<WebSocket | null>(null);
 
-  /** On mount, generate a random conversationId. */
   React.useEffect(() => {
     const randomId = generateConversationId();
     setConversationId(randomId);
   }, []);
 
-  /** Fetch conversation from DynamoDB */
   React.useEffect(() => {
-    const fetchMessages = async () => {
-      if (!conversationId) return; // skip if we haven't set it yet
-      try {
-        const response = await fetch(
-          `${BACKEND_URL}/messages?conversationId=${conversationId}`
-        );
-        const data = await response.json();
+    if (!conversationId) return;
+    const ws = new WebSocket(WEBSOCKET_SEARCH_URL);
+    socketRef.current = ws;
 
-        let newMessages = data.map((item: any, index: number) => ({
-          localId: index + 2,
-          conversationId: item.conversationId,
-          messageId: item.messageId,
-          timestamp: item.timestamp,
-          text: item.text,
-          isUser: item.isUser,
-          feedback: item.feedback || "",
-          comment: item.comment || "",
-          rating: item.rating ? Number(item.rating) : null,
-          agentAliasId: item.agentAliasId || "",
-        })) as ChatMessage[];
+    ws.onopen = () => console.log("WebSocket connected ✅");
 
-        // Sort by timestamp if desired
-        newMessages = newMessages.sort(
-          (a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
-
-        setMessages([createDefaultBotMessage()].concat(newMessages));
-      } catch (error) {
-        console.error("Fetch error:", error);
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.response) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && !last.isUser) {
+            return [
+              ...prev.slice(0, -1),
+              { ...last, text: last.text + data.response },
+            ];
+          } else {
+            return [
+              ...prev,
+              {
+                localId: prev.length + 1,
+                conversationId,
+                messageId: uuidv4(),
+                timestamp: new Date().toISOString(),
+                text: data.response,
+                isUser: false,
+                feedback: "",
+                comment: "",
+                rating: null,
+              },
+            ];
+          }
+        });
       }
+      setIsThinking(false);
     };
 
-    fetchMessages();
+    ws.onerror = (err) => console.error("WebSocket error:", err);
+    ws.onclose = () => console.log("WebSocket disconnected ❌");
+
+    return () => ws.close();
   }, [conversationId]);
 
   React.useEffect(() => {
@@ -318,9 +309,8 @@ const Chatbot = () => {
     handleCloseModal();
   };
 
-  /** Send user message, then get bot reply */
   const handleSend = async () => {
-    if (!inputText.trim() || !conversationId) return;
+    if (!inputText.trim() || !conversationId || !socketRef.current) return;
 
     const newLocalId = messages.length
       ? Math.max(...messages.map((m) => m.localId)) + 1
@@ -339,18 +329,18 @@ const Chatbot = () => {
       comment: "",
     };
 
-    // Local update
     setMessages((prev) => [...prev, userMessage]);
+    setInputText("");
+    setIsThinking(true);
 
-    // Post user msg
     try {
       await fetch(`${BACKEND_URL}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(userMessage),
       });
-    } catch (error) {
-      console.error("Send user message error:", error);
+    } catch (e) {
+      console.error("Error saving user message:", e);
     }
 
     setInputText("");
@@ -410,6 +400,13 @@ const Chatbot = () => {
     }
 
     setIsThinking(false);
+    socketRef.current.send(
+      JSON.stringify({
+        action: "web-search",
+        text: userMessage.text,
+        sessionId: conversationId,
+      })
+    );
   };
 
   const handleClear = () => {
@@ -454,7 +451,11 @@ const Chatbot = () => {
     }
   };
 
+  // Le reste de ton UI (champ de texte, message list, feedback, export...) reste identique
+  // Garde tout exactement comme tu l’avais.
+
   return (
+    // ⚠️ Remplace ici par ton JSX complet (ContainerWrapper, ChatContainer, MessageContainer etc.)
     <ContainerWrapper>
       {/* The export button in top-right corner */}
       <Tooltip
@@ -515,7 +516,14 @@ const Chatbot = () => {
                       </a>
                     )}
                   >
-                    <Typography variant="body1">{message.text}</Typography>
+                    <Typography variant="body1">
+                      {message.text.split("\n").map((line, idx) => (
+                        <React.Fragment key={idx}>
+                          {line}
+                          <br />
+                        </React.Fragment>
+                      ))}
+                    </Typography>
                   </Linkify>
                   <Box
                     sx={{
